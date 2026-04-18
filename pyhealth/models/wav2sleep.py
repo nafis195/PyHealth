@@ -797,45 +797,6 @@ class Wav2Sleep(BaseModel):
         if not self.available_modalities:
             raise ValueError("At least one modality (ecg, ppg) must be present in dataset")
         
-        # Embedding model for initial feature processing
-        # self.embedding_model = EmbeddingModel(dataset, embedding_dim)
-        
-        # ╔═════════════════════════════════════════════════════════════════╗
-        # ║  ██████╗ ██╗  ██╗██████╗ ██╗   ██╗██╗   ██╗                     ║
-        # ║  ██╔══██╗██║  ██║██╔══██╗██║   ██║██║   ██║                     ║
-        # ║  ██║  ██║███████║██████╔╝██║   ██║██║   ██║                     ║
-        # ║  ██║  ██║██╔══██║██╔══██╗██║   ██║╚██╗ ██╔╝                     ║
-        # ║  ██████╔╝██║  ██║██║  ██║╚██████╔╝ ╚████╔╝                      ║
-        # ║  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝   ╚═══╝                       ║
-        # ║                                                                 ║
-        # ║  INTEGRATION HOOK: Modality-Specific CNN Encoders               ║
-        # ║                                                                 ║
-        # ║  Replace nn.Identity() with your CNN encoder classes:           ║
-        # ║    - ECGEncoder(input_dim, output_dim)                          ║
-        # ║    - PPGEncoder(input_dim, output_dim)                          ║
-        # ║    - RespEncoder(input_dim, output_dim)                         ║
-        # ║                                                                 ║
-        # ║  Expected interface:                                            ║
-        # ║    Input:  [B, T, embedding_dim]  (from EmbeddingModel)         ║
-        # ║    Output: [B, T, embedding_dim]  (encoded features)            ║
-        # ║                                                                 ║
-        # ║  See INTEGRATION_HOOKS.md for detailed instructions.            ║
-        # ╚═════════════════════════════════════════════════════════════════╝
-
-
-        # self.modality_encoders = nn.ModuleDict()
-        # for modality in self.available_modalities:
-        #     # ┌─────────────────────────────────────────────────────────────┐
-        #     # │ TODO [DHRUV]: Replace nn.Identity() with your CNN encoder   │
-        #     # │                                                             │
-        #     # │ Example:                                                    │
-        #     # │   self.modality_encoders[modality] = ECGEncoder(            │
-        #     # │       input_dim=embedding_dim,                              │
-        #     # │       output_dim=embedding_dim,                             │
-        #     # │       dropout=dropout,                                      │
-        #     # │   )                                                         │
-        #     # └─────────────────────────────────────────────────────────────┘
-        #     self.modality_encoders[modality] = nn.Identity()  # ← REPLACE THIS
 
         self.signal_encoders = SignalEncoders(
                                     signal_encoder_map={
@@ -847,38 +808,8 @@ class Wav2Sleep(BaseModel):
                                     include_signal=False,
                                 )
         
-        
-        # ╔═════════════════════════════════════════════════════════════════╗
-        # ║  ███╗   ██╗ █████╗ ███████╗██╗███████╗                          ║
-        # ║  ████╗  ██║██╔══██╗██╔════╝██║██╔════╝                          ║
-        # ║  ██╔██╗ ██║███████║█████╗  ██║███████╗                          ║
-        # ║  ██║╚██╗██║██╔══██║██╔══╝  ██║╚════██║                          ║
-        # ║  ██║ ╚████║██║  ██║██║     ██║███████║                          ║
-        # ║  ╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝                          ║
-        # ║                                                                 ║
-        # ║  INTEGRATION HOOK: Multimodal Fusion Module                     ║
-        # ║                                                                 ║
-        # ║  Option A: Use existing TransformerFusion (default)          ║
-        # ║  Option B: Replace with your custom fusion module             ║
-        # ║                                                                 ║
-        # ║  Expected interface:                                            ║
-        # ║    Input:  Dict[str, Tensor[B, T, D]] - modality embeddings     ║
-        # ║    Output: Tensor[B, T, D] - fused representation               ║
-        # ║                                                                 ║
-        # ║  Must handle missing modalities (1, 2, or 3 inputs)!            ║
-        # ║  See INTEGRATION_HOOKS.md for detailed instructions.            ║
-        # ╚═════════════════════════════════════════════════════════════════╝
+    
         if use_paper_faithful:
-            # ┌─────────────────────────────────────────────────────────────┐
-            # │ TODO [NAFIS]: Keep this OR replace with custom fusion       │
-            # │                                                             │
-            # │ Current: Paper-faithful TransformerFusion-based fusion      │
-            # │ To replace:                                                 │
-            # │   self.fusion_module = YourFusionModule(                    │
-            # │       hidden_dim=embedding_dim,                             │
-            # │       ...                                                   │
-            # │   )                                                         │
-            # └─────────────────────────────────────────────────────────────┘
             self.fusion_module = TransformerFusion(
                 hidden_dim=embedding_dim,
                 num_heads=num_fusion_heads,
@@ -959,25 +890,6 @@ class Wav2Sleep(BaseModel):
         if not available_inputs:
             raise ValueError("At least one modality must be provided in input")
         
-        # Step 2: Process through embedding model
-        # embedded_inputs = self.embedding_model(available_inputs)
-        
-        # ┌─────────────────────────────────────────────────────────────────┐
-        # │ Step 3: Apply modality-specific encoders                        │
-        # │         ══════════════════════════════════                      │
-        # │         DHRUV'S ENCODERS ARE CALLED HERE                        │
-        # │         Each encoder: [B, T, D] → [B, T, D]                     │
-        # └─────────────────────────────────────────────────────────────────┘
-        # modality_embeddings = {}
-        # for modality, embedded_data in embedded_inputs.items():
-        #     # Ensure data is on correct device
-        #     embedded_data = embedded_data.to(self.device)
-            
-            # ═══════════════════════════════════════════════════════════════
-            # DHRUV'S ENCODER CALLED HERE: self.modality_encoders[modality]
-            # ═══════════════════════════════════════════════════════════════
-            # encoded = self.modality_encoders[modality](embedded_data)
-            # modality_embeddings[modality] = encoded
 
         wave_inputs = {}
         for modality in self.available_modalities:
@@ -996,16 +908,7 @@ class Wav2Sleep(BaseModel):
         # Step 4: Validate shapes before fusion
         self._validate_modality_shapes(modality_embeddings)
 
-        # ┌─────────────────────────────────────────────────────────────────┐
-        # │ Step 5: Multimodal fusion                                       │
-        # │         ═════════════════════                                   │
-        # │         NAFIS'S FUSION MODULE IS CALLED HERE                    │
-        # │         Input: Dict[str, [B,T,D]] → Output: [B,T,D]             │
-        # └─────────────────────────────────────────────────────────────────┘
         if self.use_paper_faithful and self.fusion_module is not None:
-            # ═══════════════════════════════════════════════════════════════
-            # NAFIS'S FUSION CALLED HERE: self.fusion_module(...)
-            # ═══════════════════════════════════════════════════════════════
             fused_features = self.fusion_module(modality_embeddings)
         else:
             # SIMPLIFIED: Use first available modality or mean
