@@ -12,7 +12,7 @@
 # ║  NAFIS'S HOOK (Fusion Module):      Lines 493-506, 593-607                ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
 
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import math
 import torch
 import torch.nn as nn
@@ -28,6 +28,22 @@ from pyhealth.models.embedding import EmbeddingModel
 # =============================================================================
 
 class ConvBlock(nn.Module):
+    """Three 1D convolution blocks with optional residual shortcut.
+
+    Stacks three :class:`ConvLayer` modules (kernel 3; strides 1, 1, 2). When
+    ``residual`` is True, adds a strided 1x1 projection of the input so the skip
+    path matches spatial resolution and channel width before the final
+    activation.
+
+    Attributes:
+        residual: Whether the residual branch is enabled.
+        layer1: First conv block (same resolution).
+        layer2: Second conv block (same resolution).
+        layer3: Third conv block (stride 2).
+        activation: Nonlinearity applied to the (possibly residual) output.
+        down: 1x1 stride-2 conv for the skip connection when ``residual`` is
+            True; otherwise a registered ``None`` parameter placeholder.
+    """
 
     def __init__(
         self,
@@ -40,12 +56,24 @@ class ConvBlock(nn.Module):
         eps: float | None = None,
         residual: bool = True,
     ) -> None:
+        """Build a ``ConvBlock``.
+
+        Args:
+            input_num_channels: Channel width of the input tensor.
+            output_num_channels: Channel width after the block.
+            activation: Name passed to :func:`get_activation`.
+            norm: Normalization style passed to each :class:`ConvLayer`.
+            dropout: Dropout probability inside each conv layer.
+            causal: Whether underlying convolutions use causal padding/trim.
+            eps: Optional epsilon forwarded to normalization when applicable.
+            residual: If True, add the strided 1x1 skip connection.
+        """
         super().__init__()
         self.residual = residual
 
         self.layer1 = ConvLayer(
-            input_channels=input_num_channels, 
-            output_channels=output_num_channels, 
+            input_channels=input_num_channels,
+            output_channels=output_num_channels,
             activation=activation,
             norm=norm,
             dropout=dropout,
@@ -57,8 +85,8 @@ class ConvBlock(nn.Module):
         )
 
         self.layer2 = ConvLayer(
-            input_channels=output_num_channels, 
-            output_channels=output_num_channels, 
+            input_channels=output_num_channels,
+            output_channels=output_num_channels,
             activation=activation,
             norm=norm,
             dropout=dropout,
@@ -70,8 +98,8 @@ class ConvBlock(nn.Module):
         )
 
         self.layer3 = ConvLayer(
-            input_channels=output_num_channels, 
-            output_channels=output_num_channels, 
+            input_channels=output_num_channels,
+            output_channels=output_num_channels,
             activation=activation,
             norm=norm,
             dropout=dropout,
@@ -80,16 +108,32 @@ class ConvBlock(nn.Module):
             padding=1,
             causal=causal,
             eps=eps,
-        )        
+        )
 
         self.activation = get_activation(activation)
 
         if self.residual:
-            self.down = nn.Conv1d(input_num_channels, output_num_channels, kernel_size=1, stride=2, padding=0, bias=False)
+            self.down = nn.Conv1d(
+                input_num_channels,
+                output_num_channels,
+                kernel_size=1,
+                stride=2,
+                padding=0,
+                bias=False,
+            )
         else:
             self.register_parameter('down', None)
-        
+
     def forward(self, x: Tensor) -> Tensor:
+        """Apply the three conv layers and optional residual fusion.
+
+        Args:
+            x: Input of shape ``[N, C_in, L]``.
+
+        Returns:
+            Output of shape ``[N, C_out, L']`` where ``L'`` is halved by the
+            third block's stride when stride-2 applies.
+        """
         output = self.layer1(x)
         output = self.layer2(output)
         output = self.layer3(output)
@@ -99,7 +143,25 @@ class ConvBlock(nn.Module):
         output = self.activation(output)
         return output
 
+
 class ConvLayer(nn.Module):
+    """Single 1D convolution with norm, activation, dropout, and optional weight norm.
+
+    Attributes:
+        input_channels: Input channel count.
+        output_channels: Output channel count.
+        kernel_size: Convolution kernel size.
+        stride: Convolution stride.
+        padding: Base or causal padding (may be overridden when ``causal``).
+        dilation: Convolution dilation.
+        causal: If True, uses causal padding and trims the right tail of activations.
+        groups: Conv1d groups.
+        bias: Whether the conv kernel uses a bias vector.
+        conv: The :class:`torch.nn.Conv1d` (or weight-norm wrapped) module.
+        activation: Activation module from :func:`get_activation`.
+        dropout: :class:`torch.nn.Dropout` applied after the activation.
+        norm: Normalization or identity (or weight-norm path uses identity here).
+    """
 
     def __init__(
         self,
@@ -117,7 +179,27 @@ class ConvLayer(nn.Module):
         groups: int = 1,
         bias: bool = False,
     ) -> None:
+        """Build a ``ConvLayer``.
 
+        Args:
+            input_channels: ``C_in`` for ``Conv1d``.
+            output_channels: ``C_out`` for ``Conv1d``.
+            activation: Activation name for :func:`get_activation`.
+            norm: Normalization name for :func:`get_norm`, or ``'weight'`` for
+                weight normalization (norm module becomes identity).
+            eps: If set, passed as ``norm_eps`` into :func:`get_norm` for norms
+                that support it (e.g. instance norm).
+            kernel_size: Spatial kernel size.
+            stride: Convolution stride along the time axis.
+            padding: Padding when not using causal mode; ignored in favor of
+                full causal padding when ``causal`` is True.
+            dilation: Dilation factor.
+            dropout: Dropout probability after activation.
+            causal: Enables causal padding ``(kernel_size - 1) * dilation`` and
+                optional right-side trimming on the forward pass.
+            groups: Conv1d groups.
+            bias: Conv bias; forced compatible with norm choice inside ``Conv1d``.
+        """
         super().__init__()
         self.input_channels = input_channels
         self.output_channels = output_channels
@@ -125,7 +207,6 @@ class ConvLayer(nn.Module):
         self.stride = stride
         self.padding = padding
         self.dilation = dilation
-        self.dropout = dropout
         self.causal = causal
         self.groups = groups
         self.bias = bias
@@ -156,8 +237,16 @@ class ConvLayer(nn.Module):
                 norm_info = {'norm_eps': eps}
             self.norm = get_norm(norm, num_features=output_channels, causal=causal, **norm_info)
 
-
     def forward(self, x: Tensor) -> Tensor:
+        """Convolve, optionally trim causal tail, then norm / activate / dropout.
+
+        Args:
+            x: Input of shape ``[N, C_in, L]``.
+
+        Returns:
+            Tensor of shape ``[N, C_out, L']`` where ``L'`` follows conv rules and
+            optional causal trimming.
+        """
         output = self.conv(x)
 
         if self.causal and self.padding > 0:
@@ -173,14 +262,34 @@ class ConvLayer(nn.Module):
         output = self.activation(output)
         output = self.dropout(output)
         return output
-        
-
-            
-
-
 
 
 class SignalEncoder(nn.Module):
+    """CNN that maps fixed-length waveform chunks to per-epoch embeddings.
+
+    Repeatedly applies :class:`ConvBlock` with exponentially capped channel
+    growth until the temporal length is reduced to 4 samples; a linear layer
+    maps the flattened CNN output to ``epoch_embedding_dim``.
+
+    Attributes:
+        input_num_channels: Input channels (typically 1).
+        epoch_embedding_dim: Output feature dimension per epoch.
+        samples_per_epoch: Waveform samples per epoch (must be a power of two
+            greater than 4 for the default depth formula).
+        norm: Normalization type per block, or ``'auto'`` to switch styles by depth.
+        init_feature_channels: Base width for the channel schedule.
+        max_channels: Upper cap on channel width in the schedule.
+        output_norm: :class:`torch.nn.LayerNorm` on linear outputs when enabled in
+            the constructor; otherwise :class:`torch.nn.Identity`.
+        residual: Passed through to each :class:`ConvBlock`.
+        causal: Global causal flag for conv blocks.
+        chunk_causal: If True with ``causal``, runs the CNN per-epoch slice without
+            cross-epoch context; otherwise runs one long conv over concatenated epochs.
+        cnn: Sequential stack of ``ConvBlock`` modules.
+        linear: Projects flattened CNN features to ``epoch_embedding_dim``.
+        epoch_size: Flattened feature size before ``linear``.
+        activation: Nonlinearity applied after the linear projection.
+    """
 
     def __init__(
         self,
@@ -195,16 +304,34 @@ class SignalEncoder(nn.Module):
         residual: bool = True,
         causal: bool = False,
         chunk_causal: bool = True,
-    ):
+    ) -> None:
+        """Build the encoder for one signal type.
+
+        Args:
+            input_num_channels: Leading channel dimension of waveform input.
+            epoch_embedding_dim: Size of each output embedding vector.
+            activation: Activation name for blocks and post-linear nonlinearity.
+            samples_per_epoch: Length of each epoch segment; must satisfy the
+                power-of-two constraint enforced below.
+            norm: Normalization type, or ``'auto'`` for depth-dependent choice.
+            init_feature_channels: Initial channel width in the schedule.
+            max_channels: Maximum channel width in the schedule.
+            output_norm: Whether to layer-normalize outputs.
+            residual: Whether conv blocks use residual shortcuts.
+            causal: Whether to use causal convolutions.
+            chunk_causal: Per-epoch vs whole-sequence causal behavior when
+                ``causal`` is True.
+
+        Raises:
+            ValueError: If ``samples_per_epoch`` is not a power of two.
+        """
         super().__init__()
         self.input_num_channels = input_num_channels
         self.epoch_embedding_dim = epoch_embedding_dim
-        self.activation = activation
         self.samples_per_epoch = samples_per_epoch
         self.norm = norm
         self.init_feature_channels = init_feature_channels
         self.max_channels = max_channels
-        self.output_norm = output_norm
         self.residual = residual
         self.causal = causal
         self.chunk_causal = chunk_causal
@@ -213,7 +340,7 @@ class SignalEncoder(nn.Module):
         blocks = []
 
         if samples_per_epoch & (samples_per_epoch - 1) != 0:
-            raise ValueError("samples_per_epoch must be even")
+            raise ValueError("samples_per_epoch must be a power of two")
         num_conv_blocks = int(math.log2(samples_per_epoch)) - 2
         num_channels_per_block = [min(init_feature_channels * 2**(i//2), max_channels) for i in range(num_conv_blocks)]
         self.epoch_size = num_channels_per_block[-1] * 4
@@ -232,8 +359,22 @@ class SignalEncoder(nn.Module):
         self.linear = nn.Linear(self.epoch_size, epoch_embedding_dim)
         self.output_norm = nn.LayerNorm(epoch_embedding_dim) if output_norm else nn.Identity()
 
+    def forward(self, x: Tensor) -> Tensor:
+        """Encode waveform epochs into shape ``[B, E, D]``.
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        Args:
+            x: Tensor of shape ``[B, T]`` or ``[B, T']`` where ``T'`` is a
+                multiple of ``samples_per_epoch``; treated as ``[B, T]`` with
+                ``T = E * samples_per_epoch``.
+
+        Returns:
+            Tensor of shape ``[B, E, epoch_embedding_dim]`` where ``E`` is the
+            number of epochs.
+
+        Raises:
+            ValueError: If the time dimension is not divisible by
+                ``samples_per_epoch``.
+        """
         if x.size(-1) % self.samples_per_epoch:
             raise ValueError(f"Input length must be a multiple of {self.samples_per_epoch}")
         
@@ -254,8 +395,8 @@ class SignalEncoder(nn.Module):
         return y
 
 
-    
-SIGNAL_TO_SAMPLES_PER_EPOCH = {
+#: Canonical sleep-signal names mapped to samples per epoch for fixed-length CNNs.
+SIGNAL_TO_SAMPLES_PER_EPOCH: dict[str, int] = {
     'ABD': 256,
     'THX': 256,
     'ECG': 1024,
@@ -264,7 +405,31 @@ SIGNAL_TO_SAMPLES_PER_EPOCH = {
     'EOG_R': 4096,
 }
 
+
 class SignalEncoders(nn.Module):
+    """Collection of :class:`SignalEncoder` modules keyed by encoder id.
+
+    ``signal_encoder_map`` lists which physical signal uses which shared encoder
+    instance (multiple signals may reuse one encoder). Optional signal-type
+    embeddings can be added to outputs when ``include_signal`` is True.
+
+    Attributes:
+        signal_encoder_map: Maps each signal name to an encoder key (shared
+            :class:`SignalEncoder` instance name).
+        feature_dim: Per-epoch embedding size ``D``.
+        activation: Activation name passed to each :class:`SignalEncoder`.
+        norm: Normalization style passed to each encoder.
+        include_signal: If True, adds a learned embedding per signal type.
+        init_feature_channels: CNN width schedule base.
+        max_channels: CNN width cap.
+        output_norm: LayerNorm on encoder outputs when True.
+        residual: Residual flag for underlying conv blocks.
+        causal: Causal conv flag for underlying encoders.
+        chunk_causal: Per-epoch causal chunking flag for underlying encoders.
+        embedding: Signal-type embedding table when ``include_signal``; else ``None``.
+        signal_encoders: ``ModuleDict`` of unique encoders by encoder key.
+        signal_to_idx: Stable index for each signal name (for embeddings).
+    """
 
     def __init__(
         self,
@@ -280,6 +445,26 @@ class SignalEncoders(nn.Module):
         causal: bool = False,
         chunk_causal: bool = True,
     ) -> None:
+        """Create encoders for every distinct encoder key in the map.
+
+        Args:
+            signal_encoder_map: Signal name to encoder-key mapping; each key
+                must appear in :data:`SIGNAL_TO_SAMPLES_PER_EPOCH` for its signal.
+            feature_dim: Output embedding dimension per epoch.
+            activation: Activation string for :class:`SignalEncoder`.
+            norm: Normalization type for :class:`SignalEncoder`.
+            include_signal: If True, instantiate ``nn.Embedding`` over signals.
+            init_feature_channels: Passed to each :class:`SignalEncoder`.
+            max_channels: Passed to each :class:`SignalEncoder`.
+            output_norm: Passed to each :class:`SignalEncoder`.
+            residual: Passed to each :class:`SignalEncoder`.
+            causal: Passed to each :class:`SignalEncoder`.
+            chunk_causal: Passed to each :class:`SignalEncoder`.
+
+        Raises:
+            ValueError: If a signal name is missing from
+                :data:`SIGNAL_TO_SAMPLES_PER_EPOCH`.
+        """
         super().__init__()
         self.signal_encoder_map = signal_encoder_map
         self.feature_dim = feature_dim
@@ -325,20 +510,46 @@ class SignalEncoders(nn.Module):
         self.signal_encoders = nn.ModuleDict(signal_encoders)
         self.signal_to_idx = {signal: i for i, signal in enumerate(sorted(signal_encoder_map.keys()))}
 
-
     def __len__(self) -> int:
+        """Return the number of distinct encoder modules.
+
+        Returns:
+            Count of unique encoder keys (size of ``signal_encoders``).
+        """
         return len(self.signal_encoders)
 
     def get_signal_encoder(self, signal: str) -> 'SignalEncoder':
+        """Return the :class:`SignalEncoder` responsible for ``signal``.
 
+        Args:
+            signal: A key present in ``signal_encoder_map``.
+
+        Returns:
+            The shared encoder module for that signal's encoder key.
+
+        Raises:
+            KeyError: If ``signal`` is not in ``signal_encoder_map`` or the
+                resolved encoder key is missing from ``signal_encoders``.
+        """
         if self.signal_encoder_map is not None:
             return self.signal_encoders[self.signal_encoder_map[signal]]
         else:
             return self.signal_encoders[signal]
-    
-    def forward(self, x: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
 
-        out: dict[str, torch.Tensor] = {}
+    def forward(self, x: dict[str, Tensor]) -> dict[str, Tensor]:
+        """Encode each signal tensor; restore ``-inf`` padding for absent batches.
+
+        Args:
+            x: Mapping from signal name to waveform tensor. Typical shape per
+                value is ``[B, T]`` with the same layout expected by
+                :meth:`SignalEncoder.forward`. Leading non-finite values along
+                time mark batches with no signal for that modality.
+
+        Returns:
+            Mapping from the same keys to tensors of shape ``[B, E, D]`` where
+            ``E`` is epochs and ``D`` is ``feature_dim``.
+        """
+        out: dict[str, Tensor] = {}
 
         for signal, x_signal in x.items():
             inf_batch_mask = torch.isinf(x_signal[:,0])
@@ -355,52 +566,149 @@ class SignalEncoders(nn.Module):
         return out
 
 class ConvLayerNorm(nn.Module):
+    """Layer normalization over the channel axis for 1D conv feature maps.
 
-    def __init__(self, num_features: int, eps: float = 1e-5):
+    For inputs ``[N, C, L]``, normalizes across ``C`` (dim 1) per location,
+    then applies affine parameters ``weight`` and ``bias``.
+
+    Attributes:
+        eps: Epsilon inside the variance denominator.
+        weight: Learnable scale ``[1, C, 1]``.
+        bias: Learnable bias ``[1, C, 1]``.
+    """
+
+    def __init__(self, num_features: int, eps: float = 1e-5) -> None:
+        """Create layer norm for ``num_features`` channels.
+
+        Args:
+            num_features: Channel count ``C``.
+            eps: Numerical stability constant.
+        """
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(1, num_features, 1))
         self.bias = nn.Parameter(torch.zeros(1, num_features, 1))
-    
+
     def forward(self, x: Tensor) -> Tensor:
-        mean = x.mean(1,keepdim=True)
-        sigma = (x - mean).pow(2).mean(1,keepdim=True)
+        """Normalize ``x`` over channels.
+
+        Args:
+            x: Tensor of shape ``[N, C, L]``.
+
+        Returns:
+            Normalized tensor of the same shape as ``x``.
+        """
+        mean = x.mean(1, keepdim=True)
+        sigma = (x - mean).pow(2).mean(1, keepdim=True)
         x = (x - mean) / torch.sqrt(sigma + self.eps)
         x = self.bias + self.weight * x
         return x
 
 class ConvRMSNorm(nn.Module):
+    """Root mean square (RMS) normalization over channel dimension for conv features.
 
-    def __init__(self, num_features: int, eps: float = 1e-5):
+    Normalizes activations with shape ``[N, C, L]`` by RMS over ``C`` (dim 1),
+    then applies a per-channel scale parameter.
+
+    Attributes:
+        weight: Learnable scale of shape ``[1, C, 1]``.
+        eps: Small constant added inside the square root for numerical stability.
+    """
+
+    def __init__(self, num_features: int, eps: float = 1e-5) -> None:
+        """Build RMS norm for ``num_features`` channels.
+
+        Args:
+            num_features: Number of channels ``C`` in ``[N, C, L]`` inputs.
+            eps: Epsilon for the RMS denominator.
+        """
         super().__init__()
         self.weight = nn.Parameter(torch.ones(1, num_features, 1))
         self.eps = eps
-    
+
     def forward(self, x: Tensor) -> Tensor:
-        sigma = x.pow(2).mean(1,keepdim=True)
+        """Apply RMS normalization.
+
+        Args:
+            x: Input tensor of shape ``[N, C, L]``.
+
+        Returns:
+            Normalized tensor of the same shape as ``x``.
+        """
+        sigma = x.pow(2).mean(1, keepdim=True)
         x = x / torch.sqrt(sigma + self.eps)
         x = self.weight * x
         return x
 
-class ConvGroupNorm(nn.Module):
 
-    def __init__(self, num_features: int, num_groups: int = 8, eps: float = 1e-5, channels : int | None = None):
+class ConvGroupNorm(nn.Module):
+    """Group normalization wrapper configured for 1D conv feature maps.
+
+    Resolves ``num_groups`` from ``num_features`` and optional ``channels``,
+    then delegates to :class:`torch.nn.GroupNorm`.
+
+    Attributes:
+        norm: The underlying :class:`torch.nn.GroupNorm` module.
+    """
+
+    def __init__(
+        self,
+        num_features: int,
+        num_groups: int = 8,
+        eps: float = 1e-5,
+        channels: int | None = None,
+    ) -> None:
+        """Build group norm for ``num_features`` channels.
+
+        Args:
+            num_features: Total channel count (``num_channels`` for GroupNorm).
+            num_groups: Desired number of groups; may be overridden by ``channels``.
+            eps: Epsilon passed to :class:`torch.nn.GroupNorm`.
+            channels: If set, ``num_groups`` is set to ``num_features // channels``.
+
+        Raises:
+            ValueError: If ``num_features`` is not divisible by the resolved
+                ``num_groups``.
+        """
         super().__init__()
-        
+
         if channels is not None:
             num_groups = num_features // channels
         if num_features < num_groups:
             num_groups = num_features
         if num_features % num_groups != 0:
-            raise ValueError(f"num_features must be divisible by num_groups")
-        self.norm = nn.GroupNorm(num_groups=num_groups, num_channels=num_features, eps=eps)
+            raise ValueError("num_features must be divisible by num_groups")
+        self.norm = nn.GroupNorm(
+            num_groups=num_groups, num_channels=num_features, eps=eps
+        )
 
     def forward(self, x: Tensor) -> Tensor:
+        """Apply group normalization.
+
+        Args:
+            x: Input tensor of shape ``[N, C, L]``.
+
+        Returns:
+            Normalized tensor of the same shape as ``x``.
+        """
         return self.norm(x)
 
-        
-def get_activation(name: str, **kwargs):
-    """Return an activation function from its name."""
+
+def get_activation(name: str, **kwargs: Any) -> nn.Module:
+    """Return a PyTorch activation module by name.
+
+    Args:
+        name: One of ``'relu'``, ``'leaky'``, ``'gelu'``, ``'silu'`` / ``'swish'``,
+            or ``'linear'`` (identity).
+        **kwargs: Forwarded to the activation constructor (e.g. ``negative_slope``
+            for LeakyReLU).
+
+    Returns:
+        An ``nn.Module`` implementing the requested activation.
+
+    Raises:
+        ValueError: If ``name`` is not supported.
+    """
     if name == 'relu':
         return nn.ReLU(**kwargs)
     elif name == 'leaky':
@@ -415,8 +723,31 @@ def get_activation(name: str, **kwargs):
         raise ValueError(f'{name=} is unsupported.')
 
 
-def get_norm(name: str | None = 'batch', causal: bool = False, *args, **kwargs) -> nn.Module:
-    # Extract norm_eps - only used by instance norm, but may be passed for any norm type
+def get_norm(
+    name: str | None = 'batch',
+    causal: bool = False,
+    *args: Any,
+    **kwargs: Any,
+) -> nn.Module:
+    """Construct a normalization layer for 1D conv stacks.
+
+    ``causal`` is accepted for API compatibility with call sites; only ``name``
+    and the forwarded arguments determine the returned module.
+
+    Args:
+        name: Normalization type: ``'batch'``, ``'layer'``, ``'rms'``, ``'instance'``,
+            ``'group'``, or ``None`` (identity).
+        causal: Reserved for parity with encoder code paths (unused here).
+        *args: Positional args forwarded to the chosen norm (e.g. ``num_features``).
+        **kwargs: Keyword args forwarded to the chosen norm. The special key
+            ``norm_eps`` is popped and, for instance norm only, mapped to ``eps``.
+
+    Returns:
+        An ``nn.Module`` normalization layer.
+
+    Raises:
+        ValueError: If ``name`` is not recognized.
+    """
     norm_eps = kwargs.pop('norm_eps', None)
 
     if name == 'batch':
@@ -434,7 +765,7 @@ def get_norm(name: str | None = 'batch', causal: bool = False, *args, **kwargs) 
     elif name == 'group':
         return ConvGroupNorm(*args, **kwargs)
     else:
-        raise ValueError(f'Normalisation with {name=} and {causal=} unknown.')
+        raise ValueError(f"Normalisation with {name=} and {causal=} unknown.")
 
 # =============================================================================
 # CLS-Token Transformer Fusion Module (Paper-Faithful)
